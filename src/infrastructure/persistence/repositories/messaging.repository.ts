@@ -20,6 +20,11 @@ export class MikroOrmInboxRepository implements InboxRepository {
     return rows.length === 1;
   }
 
+  async payloadHashOf(consumerName: string, messageId: string): Promise<string | undefined> {
+    const [row] = await this.em.execute<SqlRow[]>(INBOX_HASH_QUERY, [consumerName, messageId]);
+    return row === undefined ? undefined : asString(row.payload_hash);
+  }
+
   async markProcessed(message: InboxMessage): Promise<void> {
     await this.em.execute(
       `UPDATE inbox_messages SET processed_at = ? WHERE consumer_name = ? AND message_id = ?`,
@@ -27,6 +32,8 @@ export class MikroOrmInboxRepository implements InboxRepository {
     );
   }
 }
+
+const INBOX_HASH_QUERY = `SELECT payload_hash FROM inbox_messages WHERE consumer_name = ? AND message_id = ?`;
 
 const toOutbox = (row: SqlRow): OutboxMessage => {
   const nextAttemptAt = asOptionalDate(row.next_attempt_at);

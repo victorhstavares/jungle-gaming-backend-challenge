@@ -21,6 +21,8 @@ import { createOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { PERSISTENCE_RECORDS } from './infrastructure/persistence/records';
 import { MikroOrmTransactionRunner } from './infrastructure/persistence/transaction-runner';
 import { createSqsClient } from './infrastructure/sqs/sqs-client';
+import { ProcessExitFaultInjector } from './infrastructure/fault/fault-injector';
+import { BackgroundWorkers } from './interface/workers/background-workers';
 import { SystemClock, UuidV7Generator } from './infrastructure/system';
 import { AuthGuard } from './interface/http/auth.guard';
 import { HealthController } from './interface/http/health.controller';
@@ -72,6 +74,7 @@ function providers(config: AppConfig, overrides: AppOverrides): Provider[] {
       inject: [TOKENS.orm],
     },
     { provide: TOKENS.sqs, useFactory: () => createSqsClient(config) },
+    { provide: TOKENS.faults, useValue: new ProcessExitFaultInjector(config.faultInjection) },
     {
       provide: TOKENS.identity,
       useFactory: () =>
@@ -120,6 +123,7 @@ function providers(config: AppConfig, overrides: AppOverrides): Provider[] {
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: ProblemFilter },
     InfrastructureLifecycle,
+    BackgroundWorkers,
   ];
 }
 

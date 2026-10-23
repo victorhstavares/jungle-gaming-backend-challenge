@@ -45,6 +45,7 @@ export interface InboxRepository {
   /** Inserts the message; false means it was already received by this consumer. */
   tryReceive(message: InboxMessage): Promise<boolean>;
   markProcessed(message: InboxMessage): Promise<void>;
+  payloadHashOf(consumerName: string, messageId: string): Promise<string | undefined>;
 }
 
 export interface OutboxRepository {

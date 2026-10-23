@@ -45,6 +45,11 @@ export class IdempotencyConflictError extends ApplicationError {
   readonly code = 'IDEMPOTENCY_CONFLICT';
 }
 
+/** A queue message id seen before arrived with different content: a producer bug, parked for inspection. */
+export class InboxConflictError extends ApplicationError {
+  readonly code = 'MESSAGE_ID_REUSED';
+}
+
 export class InvalidCursorError extends ApplicationError {
   readonly code = 'INVALID_CURSOR';
 }

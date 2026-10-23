@@ -11,6 +11,7 @@ export const TOKENS = {
   audit: Symbol('AuditRecorder'),
   identity: Symbol('IdentityVerifier'),
   sqs: Symbol('SQSClient'),
+  faults: Symbol('FaultInjector'),
   openWallet: Symbol('OpenWallet'),
   processWager: Symbol('ProcessWagerTransaction'),
   walletQueries: Symbol('WalletQueries'),

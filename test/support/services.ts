@@ -21,6 +21,7 @@ export function buildServices(orm: MikroORM) {
     logger,
     metrics,
     clock,
+    audit,
     openWallet: new OpenWallet(runner, audit, clock, ids, SUPPORTED),
     processWager: new ProcessWagerTransaction(runner, audit, clock, ids, logger, metrics),
   };

@@ -17,6 +17,7 @@ import type { AuditRecorder } from '../audit/audit-recorder';
 import {
   ApplicationError,
   IdempotencyConflictError,
+  InboxConflictError,
   IntegrityViolationError,
   TransientInfrastructureError,
   UniqueViolationError,
@@ -104,14 +105,50 @@ export class ProcessWagerTransaction {
       if (decision.type === 'PENDING_REFERENCE' && tx.attempts < PENDING_REFERENCE_MAX_ATTEMPTS) {
         tx.markPendingReference(nextPendingAttemptAt(now, tx.attempts));
         await repos.transactions.update(tx);
+        await repos.audit.record({
+          ...this.auditEntryFor(tx, ctx, now, 'PENDING_REFERENCE'),
+          transactionId: tx.id,
+        });
         this.metrics.increment('pending_reference_retries_total');
+        this.logOutcome(tx, ctx, false);
         return resultOf(tx, false);
       }
-      const finalDecision: Decision =
-        decision.type === 'PENDING_REFERENCE' ? { type: 'REJECT', code: FailureCode.ReferenceNotFound } : decision;
+      // Out of attempts: a reference that exists but never settled is reported differently from one never seen.
+      const exhausted: FailureCode =
+        reference === undefined ? FailureCode.ReferenceNotFound : FailureCode.ReferenceNotProcessed;
+      const finalDecision: Decision = decision.type === 'PENDING_REFERENCE' ? { type: 'REJECT', code: exhausted } : decision;
       const result = await this.settle(repos, { ...settlement, decision: finalDecision }, ctx, 'RETRY_PENDING_REFERENCE');
       this.logOutcome(tx, ctx, false);
       return result;
+    });
+  }
+
+  /**
+   * Marks a PENDING_REFERENCE transaction FAILED after a permanent error while reprocessing it, so the worker
+   * stops re-claiming a row that can never settle. No balance or ledger change.
+   */
+  async failPending(transactionId: string, ctx: WagerContext, cause: unknown): Promise<void> {
+    this.metrics.increment('processing_failures_total');
+    this.logger.error({ err: cause, transactionId, correlationId: ctx.correlationId }, 'pending transaction failed permanently');
+    await this.runner.run({ correlationId: ctx.correlationId }, async (repos) => {
+      const peek = await repos.transactions.findById(transactionId);
+      if (peek?.status !== WagerTransactionStatus.PendingReference) return;
+      await repos.wallets.lockById(peek.walletId);
+      const tx = await repos.transactions.lockById(transactionId);
+      if (tx?.status !== WagerTransactionStatus.PendingReference) return;
+
+      const now = this.clock.now();
+      tx.fail(FailureCode.ProcessingFailed, now);
+      await repos.transactions.update(tx);
+      await repos.outbox.enqueue([
+        OutboxMessage.enqueue(WagerTransactionRejected.from(tx, eventContextFactory(this.ids, now, ctx.correlationId)())),
+      ]);
+      await repos.audit.record({
+        ...this.auditEntryFor(tx, ctx, now, 'FAILED'),
+        code: FailureCode.ProcessingFailed,
+        transactionId: tx.id,
+      });
+      this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
     });
   }
 
@@ -135,6 +172,10 @@ export class ProcessWagerTransaction {
     if (ctx.inbox !== undefined) {
       inboxMessage = InboxMessage.receive({ ...ctx.inbox, receivedAt: now });
       if (!(await repos.inbox.tryReceive(inboxMessage))) {
+        const storedHash = await repos.inbox.payloadHashOf(ctx.inbox.consumerName, ctx.inbox.messageId);
+        if (storedHash !== ctx.inbox.payloadHash) {
+          throw new InboxConflictError(`Message ${ctx.inbox.messageId} was already received with different content`);
+        }
         this.metrics.increment('inbox_duplicates_total');
         await repos.audit.record(this.auditEntry(cmd, ctx, now, 'DUPLICATE_MESSAGE'));
         return { outcome: 'DUPLICATE_MESSAGE', idempotentReplay: true };
