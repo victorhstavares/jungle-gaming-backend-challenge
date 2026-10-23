@@ -80,9 +80,12 @@ describe('process lifecycle', () => {
 
     expect(exitCode).toBe(0);
     expect(app.output()).toContain('background workers stopped');
-    await Bun.sleep(5_500);
-    const leftover = await queues.drain(queues.wagerUrl);
-    expect((await debits(wallet.id)) + leftover.length).toBe(2);
+    // A message caught by the aborted long poll reappears once its 30s visibility timeout lapses: delayed, not lost.
+    let leftover = 0;
+    await until(async () => {
+      leftover += (await queues.drain(queues.wagerUrl, 2)).length;
+      return (await debits(wallet.id)) + leftover === 2;
+    }, 45_000);
     await assertLedgerInvariant(db, wallet.id);
   });
 });

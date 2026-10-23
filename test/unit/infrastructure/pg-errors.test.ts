@@ -20,6 +20,13 @@ describe('classifyDbError', () => {
     expect(classifyDbError(pgError(code))).toEqual({ kind: 'transient', reason });
   });
 
+  test.each(['Connection terminated unexpectedly', 'Query read timeout', 'timeout exceeded when trying to connect'])(
+    'code-less driver error %p is a transient connection failure',
+    (message) => {
+      expect(classifyDbError(new Error(message))).toEqual({ kind: 'transient', reason: 'connection' });
+    },
+  );
+
   test('unique violation keeps the constraint name', () => {
     expect(classifyDbError(pgError('23505', { constraint: 'wallets_player_currency_key' }))).toEqual({
       kind: 'unique',

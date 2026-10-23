@@ -158,11 +158,15 @@ describe('inbox', () => {
 
 describe('outbox', () => {
   test('concurrent claims never hand out the same message', async () => {
-    const wallet = await openWallet(0n);
+    const template = await openWallet(0n);
     await runner.run(ctx, async (repos) => {
+      // Distinct aggregates: within one aggregate only the oldest pending event is claimable.
       const messages = Array.from({ length: 30 }, () =>
         OutboxMessage.enqueue(
-          WalletOpened.from(wallet, { eventId: Bun.randomUUIDv7(), correlationId: 'c', occurredAt: now }),
+          WalletOpened.from(
+            Wallet.rehydrate({ id: Bun.randomUUIDv7(), playerId: template.playerId, currency: 'BRL', balance: brl(0n), version: 1, createdAt: now, updatedAt: now }),
+            { eventId: Bun.randomUUIDv7(), correlationId: 'c', occurredAt: now },
+          ),
         ),
       );
       await repos.outbox.enqueue(messages);

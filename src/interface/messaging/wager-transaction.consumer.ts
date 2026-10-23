@@ -107,12 +107,14 @@ export class WagerTransactionConsumer {
     }
     await Promise.all(
       [...groups.values()].map(async (group) => {
+        let blocked = false;
         for (const message of group) {
-          if (this.isStopping()) {
+          // Once a message goes back for retry, the rest of its group must wait behind it to keep FIFO order.
+          if (blocked || this.isStopping()) {
             await this.release(message);
-          } else {
-            await this.handle(message);
+            continue;
           }
+          blocked = (await this.handle(message)) === 'retry';
         }
       }),
     );
@@ -135,21 +137,21 @@ export class WagerTransactionConsumer {
     }
   }
 
-  private async handle(message: Message): Promise<void> {
+  private async handle(message: Message): Promise<'settled' | 'retry'> {
     const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? '1');
     const verdict = await this.process(message);
 
     if (verdict.action === 'ack') {
       await this.delete(message);
-      return;
+      return 'settled';
     }
     if (verdict.action === 'dlq') {
       await this.deadLetter(message, verdict);
-      return;
+      return 'settled';
     }
     if (receiveCount >= this.options.maxReceives) {
       await this.deadLetter(message, { action: 'dlq', reason: verdict.reason, code: verdict.reason });
-      return;
+      return 'settled';
     }
     this.deps.metrics.increment('sqs_retries_total', { reason: verdict.reason });
     const delay = Math.min(this.options.baseBackoffSeconds * 2 ** receiveCount, this.options.maxBackoffSeconds);
@@ -160,6 +162,7 @@ export class WagerTransactionConsumer {
         VisibilityTimeout: delay,
       }),
     );
+    return 'retry';
   }
 
   private async process(message: Message): Promise<Verdict> {

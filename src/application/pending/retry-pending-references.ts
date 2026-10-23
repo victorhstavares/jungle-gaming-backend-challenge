@@ -1,4 +1,4 @@
-import { IntegrityViolationError } from '../errors';
+import { IntegrityViolationError, UniqueViolationError } from '../errors';
 import type { Clock } from '../ports/clock';
 import type { Logger, Metrics } from '../ports/observability';
 import type { TransactionRunner } from '../ports/repositories';
@@ -10,6 +10,7 @@ export interface PendingWorkerOptions {
 }
 
 const ACTOR = 'pending-reference-worker';
+const RETRY_CONCURRENCY = 4;
 
 /**
  * Re-evaluates due PENDING_REFERENCE transactions. The claim commits before any reprocessing starts: holding the
@@ -30,13 +31,21 @@ export class RetryPendingReferences {
       repos.transactions.claimPendingReferences(this.clock.now(), this.options.batchSize, this.options.leaseMs),
     );
 
+    // A few at a time: a burst of wake-ups on one wallet would otherwise park every pooled connection on its lock.
+    for (let start = 0; start < ids.length; start += RETRY_CONCURRENCY) {
+      await this.retryChunk(ids.slice(start, start + RETRY_CONCURRENCY));
+    }
+    return ids.length;
+  }
+
+  private async retryChunk(ids: readonly string[]): Promise<void> {
     await Promise.all(
       ids.map(async (id) => {
         const ctx = { source: 'WORKER' as const, actor: ACTOR, correlationId: `retry-${id}` };
         try {
           await this.processWager.reprocessPending(id, ctx);
         } catch (error) {
-          if (error instanceof IntegrityViolationError) {
+          if (error instanceof IntegrityViolationError || error instanceof UniqueViolationError) {
             await this.processWager.failPending(id, ctx, error);
             return;
           }
@@ -46,6 +55,5 @@ export class RetryPendingReferences {
         }
       }),
     );
-    return ids.length;
   }
 }

@@ -12,7 +12,8 @@ const CONNECTION_STATES = new Set(['57P01', '57P02', '57P03', '53300']);
 const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND']);
 const INTEGRITY_STATES = new Set(['23514', '23503', '23502', '22003', 'P0001']);
 // node-postgres and pg-pool raise these without a SQLSTATE when the socket drops or the pool cannot connect.
-const CODELESS_CONNECTION_ERRORS = /Connection terminated|timeout exceeded when trying to connect|Client has encountered a connection error|Connection ended unexpectedly/i;
+const CODELESS_CONNECTION_ERRORS =
+  /Connection terminated|timeout exceeded when trying to connect|Client has encountered a connection error|Connection ended unexpectedly|Query read timeout/i;
 
 interface ErrorFacts {
   code?: string;

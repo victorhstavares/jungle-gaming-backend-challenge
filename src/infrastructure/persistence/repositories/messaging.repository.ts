@@ -76,17 +76,23 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
     const rows = await this.em.execute<SqlRow[]>(
       `UPDATE outbox_messages SET locked_until = ?
         WHERE id IN (
-          SELECT id FROM outbox_messages
-           WHERE published_at IS NULL
-             AND next_attempt_at <= ?
-             AND (locked_until IS NULL OR locked_until < ?)
-           ORDER BY occurred_at
+          SELECT o.id FROM outbox_messages o
+           WHERE o.published_at IS NULL
+             AND o.next_attempt_at <= ?
+             AND (o.locked_until IS NULL OR o.locked_until < ?)
+             -- Only the oldest unpublished event of an aggregate is eligible, so events leave in commit order.
+             AND NOT EXISTS (
+               SELECT 1 FROM outbox_messages earlier
+                WHERE earlier.aggregate_id = o.aggregate_id
+                  AND earlier.published_at IS NULL
+                  AND (earlier.occurred_at, earlier.id) < (o.occurred_at, o.id))
+           ORDER BY o.occurred_at, o.id
            LIMIT ?
-           FOR UPDATE SKIP LOCKED)
+           FOR UPDATE OF o SKIP LOCKED)
         RETURNING id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at, published_at`,
       [new Date(now.getTime() + leaseMs), now, now, limit],
     );
-    return rows.map(toOutbox).sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
+    return rows.map(toOutbox).sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || (a.id < b.id ? -1 : 1));
   }
 
   async markPublished(message: OutboxMessage): Promise<void> {

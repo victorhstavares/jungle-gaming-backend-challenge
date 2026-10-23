@@ -166,7 +166,7 @@ export class ProcessWagerTransaction {
   }
 
   private async process(repos: TxRepositories, cmd: WagerCommand, ctx: WagerContext): Promise<WagerResult> {
-    const now = this.clock.now();
+    let now = this.clock.now();
 
     let inboxMessage: InboxMessage | undefined;
     if (ctx.inbox !== undefined) {
@@ -186,6 +186,8 @@ export class ProcessWagerTransaction {
     if (wallet === undefined) {
       throw new WalletNotFoundError(`Wallet ${cmd.walletId} does not exist`);
     }
+    // Read the clock again under the lock, so timestamps of one wallet's changes follow their commit order.
+    now = this.clock.now();
 
     const existing =
       (await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey)) ??

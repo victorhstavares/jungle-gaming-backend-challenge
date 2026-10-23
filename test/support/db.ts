@@ -3,8 +3,11 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { createOrmConfig } from '../../src/infrastructure/persistence/mikro-orm.config';
 
 export const ADMIN_URL = process.env.TEST_ADMIN_DATABASE_URL ?? 'postgresql://wagering:wagering@localhost:5432/wagering';
-const TEMPLATE_DB = 'wallet_template';
-const TEMPLATE_LOCK_KEY = 4_242_001;
+// Each test process builds its own template, so concurrent runs (a CI matrix, a second terminal) never drop
+// each other's databases. Names carry their creation time; only leftovers older than an hour are cleaned up.
+const RUN_STAMP = Math.floor(Date.now() / 1000);
+const TEMPLATE_DB = `tpl_${String(RUN_STAMP)}_${String(process.pid)}`;
+const STALE_AFTER_SECONDS = 3_600;
 
 export type Row = Record<string, unknown>;
 
@@ -25,17 +28,21 @@ const urlFor = (database: string): string => {
 
 let templateReady: Promise<void> | undefined;
 
+async function dropStaleDatabases(admin: SQL): Promise<void> {
+  const rows = await admin.unsafe<{ datname: string }[]>(
+    `SELECT datname FROM pg_database WHERE datname ~ '^(test|tpl)_[0-9]+_'`,
+  );
+  const cutoff = RUN_STAMP - STALE_AFTER_SECONDS;
+  for (const { datname } of rows) {
+    const created = Number(datname.split('_')[1]);
+    if (created < cutoff) await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+  }
+}
+
 async function buildTemplate(): Promise<void> {
   const admin = new SQL(ADMIN_URL);
   try {
-    await admin.unsafe(`SELECT pg_advisory_lock(${TEMPLATE_LOCK_KEY})`);
-    const leftovers = await admin.unsafe<{ datname: string }[]>(
-      `SELECT datname FROM pg_database WHERE datname LIKE 'test\\_%'`,
-    );
-    for (const { datname } of leftovers) {
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
-    }
-    await admin.unsafe(`DROP DATABASE IF EXISTS ${TEMPLATE_DB} WITH (FORCE)`);
+    await dropStaleDatabases(admin);
     await admin.unsafe(`CREATE DATABASE ${TEMPLATE_DB}`);
     const orm = await MikroORM.init(createOrmConfig({ databaseUrl: urlFor(TEMPLATE_DB), poolMax: 2 }));
     try {
@@ -44,7 +51,6 @@ async function buildTemplate(): Promise<void> {
       await orm.close(true);
     }
   } finally {
-    await admin.unsafe(`SELECT pg_advisory_unlock(${TEMPLATE_LOCK_KEY})`);
     await admin.close();
   }
 }
@@ -53,7 +59,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   templateReady ??= buildTemplate();
   await templateReady;
 
-  const name = `test_${crypto.randomUUID().replaceAll('-', '')}`;
+  const name = `test_${String(RUN_STAMP)}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
   const admin = new SQL(ADMIN_URL);
   await admin.unsafe(`CREATE DATABASE ${name} TEMPLATE ${TEMPLATE_DB}`);
   await admin.close();

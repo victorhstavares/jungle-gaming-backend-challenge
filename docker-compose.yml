@@ -1,5 +1,39 @@
 name: wagering
 
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+    DATABASE_POOL_MAX: "20"
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    SQS_ENDPOINT: http://localstack:4566
+    WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+    EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wallet-events.fifo
+    APP_ROLES: api,consumer,outbox,pending-reference
+    SUPPORTED_CURRENCIES: BRL,USD,EUR
+    JWKS_URL: http://keycloak:8080/realms/jungle/protocol/openid-connect/certs
+    AUTH_ISSUER: http://localhost:8080/realms/jungle
+    AUTH_AUDIENCE: wallet-service
+    LOG_LEVEL: info
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    localstack:
+      condition: service_healthy
+    keycloak:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "bun", "-e", "const r = await fetch('http://localhost:3000/health/ready'); process.exit(r.ok ? 0 : 1)"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -32,3 +66,57 @@ services:
       interval: 2s
       timeout: 5s
       retries: 60
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Tokens always carry this issuer, whichever hostname the client used to fetch them.
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realm-jungle.json:/opt/keycloak/data/import/realm-jungle.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  migrate:
+    build: .
+    command: ["bun", "src/infrastructure/persistence/migrate.ts", "up"]
+    environment:
+      DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+      AWS_REGION: us-east-1
+      WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wallet-events.fifo
+      JWKS_URL: http://keycloak:8080/realms/jungle/protocol/openid-connect/certs
+      AUTH_ISSUER: http://localhost:8080/realms/jungle
+      AUTH_AUDIENCE: wallet-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app-1: *app
+  app-2: *app
+  app-3: *app
+
+  nginx:
+    image: nginx:1.29-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      app-1:
+        condition: service_healthy
+      app-2:
+        condition: service_healthy
+      app-3:
+        condition: service_healthy

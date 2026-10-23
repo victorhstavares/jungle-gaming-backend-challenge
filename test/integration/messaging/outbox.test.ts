@@ -101,17 +101,49 @@ describe('PublishOutboxBatch', () => {
     const result = await publisher(metrics, unreachable).execute();
 
     expect(result.failed).toBeGreaterThan(0);
-    const [row] = await db.sql(
+    const attempted = await db.sql(
       `SELECT attempts, next_attempt_at > now() AS later, last_error IS NOT NULL AS has_error, locked_until
-         FROM outbox_messages WHERE published_at IS NULL ORDER BY occurred_at LIMIT 1`,
+         FROM outbox_messages WHERE published_at IS NULL AND attempts > 0`,
     );
-    expect(row).toEqual({ attempts: 1, later: true, has_error: true, locked_until: null });
+    expect(attempted).toHaveLength(result.failed);
+    for (const row of attempted) expect(row).toEqual({ attempts: 1, later: true, has_error: true, locked_until: null });
     expect(metrics.count('outbox_publish_failures_total')).toBe(result.failed);
     expect(metrics.gauges.get('outbox_lag_seconds{}')).toBeGreaterThanOrEqual(0);
 
     await db.sql(`UPDATE outbox_messages SET next_attempt_at = now() WHERE published_at IS NULL`);
-    await publisher().execute();
+    while ((await publisher().execute()).published > 0) {
+      // one event per aggregate per round, oldest first
+    }
     expect(await pending()).toBe(0);
+    await queues.drain(queues.eventsUrl);
+  });
+
+  test('a later event of an aggregate waits while an earlier one is still unpublished', async () => {
+    await produceEvents(1);
+    const [oldest] = await db.sql(
+      `SELECT id, aggregate_id FROM outbox_messages WHERE published_at IS NULL ORDER BY occurred_at, id LIMIT 1`,
+    );
+    await db.sql(`UPDATE outbox_messages SET next_attempt_at = now() + interval '1 hour', attempts = 1 WHERE id = $1`, [oldest?.id]);
+    await db.sql(
+      `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
+       VALUES ($1, $2, 'WalletBalanceChanged', '{}'::jsonb, now() + interval '1 second', 0, now())`,
+      [Bun.randomUUIDv7(), oldest?.aggregate_id],
+    );
+
+    const pendingFor = async (): Promise<number> =>
+      Number((await db.sql(`SELECT count(*)::int AS n FROM outbox_messages WHERE aggregate_id = $1 AND published_at IS NULL`, [oldest?.aggregate_id]))[0]?.n);
+    const before = await pendingFor();
+
+    while ((await publisher().execute()).published > 0) {
+      // publish everything that is eligible
+    }
+
+    expect(before).toBeGreaterThanOrEqual(2);
+    expect(await pendingFor()).toBe(before);
+    await db.sql(`UPDATE outbox_messages SET next_attempt_at = now() WHERE published_at IS NULL`);
+    while ((await publisher().execute()).published > 0) {
+      // drain once the earlier event is due again
+    }
     await queues.drain(queues.eventsUrl);
   });
 
