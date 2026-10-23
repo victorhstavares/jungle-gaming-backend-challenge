@@ -1,0 +1,44 @@
+{
+  "name": "jungle-gaming-backend-challenge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "bun test --timeout 150000 test/unit test/integration test/concurrency",
+    "test:unit": "bun test --timeout 30000 test/unit",
+    "test:integration": "bun test --timeout 30000 test/integration",
+    "test:concurrency": "bun test --timeout 120000 test/concurrency",
+    "test:e2e": "bun test --timeout 120000 test/e2e",
+    "test:load": "bun scripts/load-test.ts",
+    "demo:chaos": "bun scripts/chaos.ts",
+    "migrate:up": "bun src/infrastructure/persistence/migrate.ts up",
+    "migrate:down": "bun src/infrastructure/persistence/migrate.ts down"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1156.0",
+    "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/migrations": "7.2.5",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.5",
+    "@nestjs/common": "12.2.0",
+    "@nestjs/core": "12.2.0",
+    "@nestjs/platform-fastify": "12.2.0",
+    "@prometheus-io/client": "0.16.1",
+    "jose": "6.2.13",
+    "pino": "10.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.4.4",
+    "eslint": "^10.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.72.0"
+  }
+}
