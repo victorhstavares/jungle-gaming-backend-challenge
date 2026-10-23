@@ -33,7 +33,7 @@ Gerado por `bun run test:load -- --duration 60 --concurrency 50 --wallets 100` e
 | Replays respondidos sem erro | 5407 de 5407 |
 | Wallets consistentes na reconciliação | 100 de 100 |
 | Timeouts de lock da wallet (uma instância) | 0 |
-| Espera de lock acumulada (uma instância) | 188.05514351399916 s em 18060 locks |
+| Espera de lock acumulada (uma instância) | 188.1 s em 18060 locks |
 | Outbox lag no fim (uma instância) | 32.504 s |
 
 ### Respostas por status

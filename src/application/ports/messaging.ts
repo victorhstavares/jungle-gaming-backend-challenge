@@ -8,7 +8,8 @@ export interface EventPublisher {
   publishBatch(messages: readonly OutboxMessage[]): Promise<ReadonlyMap<string, string>>;
 }
 
-export type FaultPoint = 'consumer.afterCommitBeforeAck' | 'outbox.afterPublishBeforeMark';
+export const FAULT_POINTS = ['consumer.afterCommitBeforeAck', 'outbox.afterPublishBeforeMark'] as const;
+export type FaultPoint = (typeof FAULT_POINTS)[number];
 
 /** Lets tests kill the process between a commit and its ack, or between a publish and its mark. No-op outside tests. */
 export interface FaultInjector {

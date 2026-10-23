@@ -39,14 +39,18 @@ export interface WagerContext {
   inbox?: { consumerName: string; messageId: string; payloadHash: string };
 }
 
-const IDEMPOTENCY_CONSTRAINTS = new Set(['wager_tx_provider_idempotency_key', 'wager_tx_provider_external_key']);
+type Persist = (repos: TxRepositories, tx: WagerTransaction) => Promise<void>;
+type Operation = AuditEntry['operation'];
+
+const insertTx: Persist = (repos, tx) => repos.transactions.insert(tx);
+const updateTx: Persist = (repos, tx) => repos.transactions.update(tx);
 
 interface Settlement {
   tx: WagerTransaction;
   wallet: Wallet;
   decision: Decision;
   reference: WagerTransaction | undefined;
-  persist: (repos: TxRepositories, tx: WagerTransaction) => Promise<void>;
+  persist: Persist;
   now: Date;
   nextEventContext: () => EventContext;
 }
@@ -80,44 +84,32 @@ export class ProcessWagerTransaction {
   /** Re-evaluates a PENDING_REFERENCE transaction. Lock order matches `execute`: wallet first, then transaction. */
   async reprocessPending(transactionId: string, ctx: WagerContext): Promise<WagerResult | undefined> {
     return this.runner.run({ correlationId: ctx.correlationId }, async (repos) => {
-      const peek = await repos.transactions.findById(transactionId);
-      if (peek?.status !== WagerTransactionStatus.PendingReference) {
-        return peek === undefined ? undefined : resultOf(peek, true);
-      }
-      const wallet = await this.lockWallet(repos, peek.walletId);
-      const tx = await repos.transactions.lockById(transactionId);
-      if (wallet === undefined || tx?.status !== WagerTransactionStatus.PendingReference) {
-        return tx === undefined ? undefined : resultOf(tx, true);
-      }
+      const locked = await this.lockPending(repos, transactionId);
+      if (locked.kind === 'settled') return locked.result;
+      const { tx, wallet } = locked;
 
       const now = this.clock.now();
       const { decision, reference } = await this.decideFor(repos, tx, wallet);
-      const settlement: Settlement = {
-        tx,
-        wallet,
-        decision,
-        reference,
-        now,
-        persist: (r, t) => r.transactions.update(t),
-        nextEventContext: eventContextFactory(this.ids, now, ctx.correlationId),
-      };
+      const outOfAttempts = decision.type === 'PENDING_REFERENCE' && tx.attempts >= PENDING_REFERENCE_MAX_ATTEMPTS;
+      // A reference that exists but never settled is reported differently from one never seen.
+      const exhausted = reference === undefined ? FailureCode.ReferenceNotFound : FailureCode.ReferenceNotProcessed;
+      const finalDecision: Decision = outOfAttempts ? { type: 'REJECT', code: exhausted } : decision;
+      if (finalDecision.type === 'PENDING_REFERENCE') this.metrics.increment('pending_reference_retries_total');
 
-      if (decision.type === 'PENDING_REFERENCE' && tx.attempts < PENDING_REFERENCE_MAX_ATTEMPTS) {
-        tx.markPendingReference(nextPendingAttemptAt(now, tx.attempts));
-        await repos.transactions.update(tx);
-        await repos.audit.record({
-          ...this.auditEntryFor(tx, ctx, now, 'PENDING_REFERENCE'),
-          transactionId: tx.id,
-        });
-        this.metrics.increment('pending_reference_retries_total');
-        this.logOutcome(tx, ctx, false);
-        return resultOf(tx, false);
-      }
-      // Out of attempts: a reference that exists but never settled is reported differently from one never seen.
-      const exhausted: FailureCode =
-        reference === undefined ? FailureCode.ReferenceNotFound : FailureCode.ReferenceNotProcessed;
-      const finalDecision: Decision = decision.type === 'PENDING_REFERENCE' ? { type: 'REJECT', code: exhausted } : decision;
-      const result = await this.settle(repos, { ...settlement, decision: finalDecision }, ctx, 'RETRY_PENDING_REFERENCE');
+      const result = await this.settle(
+        repos,
+        {
+          tx,
+          wallet,
+          decision: finalDecision,
+          reference,
+          now,
+          persist: updateTx,
+          nextEventContext: eventContextFactory(this.ids, now, ctx.correlationId),
+        },
+        ctx,
+        'RETRY_PENDING_REFERENCE',
+      );
       this.logOutcome(tx, ctx, false);
       return result;
     });
@@ -131,24 +123,10 @@ export class ProcessWagerTransaction {
     this.metrics.increment('processing_failures_total');
     this.logger.error({ err: cause, transactionId, correlationId: ctx.correlationId }, 'pending transaction failed permanently');
     await this.runner.run({ correlationId: ctx.correlationId }, async (repos) => {
-      const peek = await repos.transactions.findById(transactionId);
-      if (peek?.status !== WagerTransactionStatus.PendingReference) return;
-      await repos.wallets.lockById(peek.walletId);
-      const tx = await repos.transactions.lockById(transactionId);
-      if (tx?.status !== WagerTransactionStatus.PendingReference) return;
-
-      const now = this.clock.now();
-      tx.fail(FailureCode.ProcessingFailed, now);
-      await repos.transactions.update(tx);
-      await repos.outbox.enqueue([
-        OutboxMessage.enqueue(WagerTransactionRejected.from(tx, eventContextFactory(this.ids, now, ctx.correlationId)())),
-      ]);
-      await repos.audit.record({
-        ...this.auditEntryFor(tx, ctx, now, 'FAILED'),
-        code: FailureCode.ProcessingFailed,
-        transactionId: tx.id,
-      });
-      this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
+      const locked = await this.lockPending(repos, transactionId);
+      if (locked.kind === 'pending') {
+        await this.markFailed(repos, locked.tx, ctx, this.clock.now(), updateTx, 'RETRY_PENDING_REFERENCE');
+      }
     });
   }
 
@@ -158,7 +136,7 @@ export class ProcessWagerTransaction {
     } catch (error) {
       // Another request inserted the same key between our lookup and insert (different wallets, so no shared lock).
       // Running again finds that row and answers as a replay or a conflict.
-      if (error instanceof UniqueViolationError && IDEMPOTENCY_CONSTRAINTS.has(error.constraint)) {
+      if (error instanceof UniqueViolationError && error.target === 'idempotency') {
         return await this.runner.run({ correlationId: ctx.correlationId }, (repos) => this.process(repos, cmd, ctx));
       }
       throw error;
@@ -186,42 +164,15 @@ export class ProcessWagerTransaction {
     if (wallet === undefined) {
       throw new WalletNotFoundError(`Wallet ${cmd.walletId} does not exist`);
     }
-    // Read the clock again under the lock, so timestamps of one wallet's changes follow their commit order.
     now = this.clock.now();
 
-    const existing =
-      (await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey)) ??
-      (await repos.transactions.findByExternalId(cmd.providerId, cmd.externalTransactionId));
+    const existing = await this.findExistingOrConflict(repos, cmd);
     if (existing !== undefined) {
-      if (existing.idempotencyKey !== cmd.idempotencyKey || !existing.matchesPayload(cmd.payloadHash)) {
-        throw new IdempotencyConflictError(
-          `Idempotency key ${cmd.idempotencyKey} or external id ${cmd.externalTransactionId} was used with another payload`,
-        );
-      }
       await this.markInboxProcessed(repos, inboxMessage, now);
-      await repos.audit.record({ ...this.auditEntry(cmd, ctx, now, 'REPLAY'), transactionId: existing.id });
-      this.metrics.increment('idempotent_replays_total');
-      this.logOutcome(existing, ctx, true);
-      return resultOf(existing, true);
+      return this.replay(repos, existing, cmd, ctx, now);
     }
 
-    const tx = WagerTransaction.create({
-      id: this.ids.next(),
-      providerId: cmd.providerId,
-      externalTransactionId: cmd.externalTransactionId,
-      idempotencyKey: cmd.idempotencyKey,
-      payloadHash: cmd.payloadHash,
-      walletId: cmd.walletId,
-      playerId: cmd.playerId,
-      roundId: cmd.roundId,
-      gameId: cmd.gameId,
-      kind: cmd.kind,
-      money: cmd.money,
-      ...(cmd.referenceExternalTransactionId === undefined
-        ? {}
-        : { referenceExternalTransactionId: cmd.referenceExternalTransactionId }),
-      createdAt: now,
-    });
+    const tx = this.newTransaction(cmd, now);
     const { decision, reference } = await this.decideFor(repos, tx, wallet);
     const result = await this.settle(
       repos,
@@ -231,12 +182,11 @@ export class ProcessWagerTransaction {
         decision,
         reference,
         now,
-        persist: (r, t) => r.transactions.insert(t),
+        persist: insertTx,
         nextEventContext: eventContextFactory(this.ids, now, ctx.correlationId, ctx.inbox?.messageId),
       },
       ctx,
       'SUBMIT_WAGER',
-      cmd,
     );
     await this.markInboxProcessed(repos, inboxMessage, now);
     this.logOutcome(tx, ctx, false);
@@ -260,13 +210,7 @@ export class ProcessWagerTransaction {
     return { decision, reference };
   }
 
-  private async settle(
-    repos: TxRepositories,
-    s: Settlement,
-    ctx: WagerContext,
-    operation: AuditEntry['operation'],
-    cmd?: WagerCommand,
-  ): Promise<WagerResult> {
+  private async settle(repos: TxRepositories, s: Settlement, ctx: WagerContext, operation: Operation): Promise<WagerResult> {
     const { tx, wallet, decision, now } = s;
     const outbox: OutboxMessage[] = [];
     let outcome: AuditOutcome;
@@ -312,7 +256,10 @@ export class ProcessWagerTransaction {
       case 'PENDING_REFERENCE':
         tx.markPendingReference(nextPendingAttemptAt(now, tx.attempts));
         await s.persist(repos, tx);
-        outbox.push(OutboxMessage.enqueue(WagerTransactionPendingReference.from(tx, s.nextEventContext())));
+        // Announced once, when the wait starts; later retries are visible in the audit and status history.
+        if (tx.attempts === 1) {
+          outbox.push(OutboxMessage.enqueue(WagerTransactionPendingReference.from(tx, s.nextEventContext())));
+        }
         outcome = 'PENDING_REFERENCE';
         break;
     }
@@ -322,20 +269,19 @@ export class ProcessWagerTransaction {
     }
     await repos.outbox.enqueue(outbox);
     await repos.audit.record({
-      ...(cmd === undefined ? this.auditEntryFor(tx, ctx, now, outcome) : this.auditEntry(cmd, ctx, now, outcome)),
-      operation,
-      transactionId: tx.id,
+      ...this.auditFromTx(tx, ctx, now, outcome, operation),
       ...(tx.failureCode === undefined ? {} : { code: tx.failureCode }),
     });
-    this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
+    if (outcome !== 'PENDING_REFERENCE' || tx.attempts === 1) {
+      this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
+    }
     return resultOf(tx, false);
   }
 
   private async handleFailure(error: unknown, cmd: WagerCommand, ctx: WagerContext): Promise<WagerResult> {
     const now = this.clock.now();
     if (error instanceof IdempotencyConflictError) {
-      this.metrics.increment('idempotency_conflicts_total');
-      await this.audit.recordOutside({ ...this.auditEntry(cmd, ctx, now, 'IDEMPOTENCY_CONFLICT'), code: error.code });
+      await this.auditConflict(error, cmd, ctx, now);
       throw error;
     }
     if (error instanceof WalletNotFoundError) {
@@ -350,15 +296,13 @@ export class ProcessWagerTransaction {
       );
       throw error;
     }
-    // Only a proven integrity violation is permanent. Anything unclassified is surfaced so the caller retries with
-    // the same key; turning it into a terminal FAILED could lose a bet that would succeed on the next attempt.
-    if (error instanceof IntegrityViolationError) {
-      return this.recordFailed(error, cmd, ctx, now);
-    }
-    if (error instanceof UniqueViolationError && IDEMPOTENCY_CONSTRAINTS.has(error.constraint)) {
+    if (error instanceof UniqueViolationError && error.target === 'idempotency') {
       throw new TransientInfrastructureError('Concurrent request with the same key; retry', { cause: error, reason: 'conflict' });
     }
-    if (error instanceof UniqueViolationError) {
+    // Permanent: an integrity trigger or CHECK fired, or a UNIQUE that is not about idempotency was hit.
+    // Anything unclassified is surfaced instead, so the caller retries with the same key; turning it into a
+    // terminal FAILED could lose a bet that would succeed on the next attempt.
+    if (error instanceof IntegrityViolationError || error instanceof UniqueViolationError) {
       return this.recordFailed(error, cmd, ctx, now);
     }
     if (!(error instanceof ApplicationError)) {
@@ -368,68 +312,113 @@ export class ProcessWagerTransaction {
   }
 
   /**
-   * A permanent infrastructure error (an integrity trigger fired, a value overflowed) rolled the attempt back.
-   * Record the transaction as FAILED in a fresh transaction so the provider and auditors see a final answer.
+   * A permanent infrastructure error rolled the attempt back. Record the transaction as FAILED in a fresh
+   * transaction so the provider and auditors see a final answer.
    */
   private async recordFailed(error: unknown, cmd: WagerCommand, ctx: WagerContext, now: Date): Promise<WagerResult> {
     this.metrics.increment('processing_failures_total');
     this.logger.error({ ...this.logFields(cmd, ctx), err: error }, 'wager processing failed permanently');
     try {
       return await this.runner.run({ correlationId: ctx.correlationId }, async (repos) => {
-        const existing =
-          (await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey)) ??
-          (await repos.transactions.findByExternalId(cmd.providerId, cmd.externalTransactionId));
-        if (existing !== undefined) {
-          if (existing.idempotencyKey !== cmd.idempotencyKey || !existing.matchesPayload(cmd.payloadHash)) {
-            throw new IdempotencyConflictError(
-              `Idempotency key ${cmd.idempotencyKey} or external id ${cmd.externalTransactionId} was used with another payload`,
-            );
-          }
-          await repos.audit.record({ ...this.auditEntry(cmd, ctx, now, 'REPLAY'), transactionId: existing.id });
-          return resultOf(existing, true);
-        }
-
-        const tx = WagerTransaction.create({
-          id: this.ids.next(),
-          providerId: cmd.providerId,
-          externalTransactionId: cmd.externalTransactionId,
-          idempotencyKey: cmd.idempotencyKey,
-          payloadHash: cmd.payloadHash,
-          walletId: cmd.walletId,
-          playerId: cmd.playerId,
-          roundId: cmd.roundId,
-          gameId: cmd.gameId,
-          kind: cmd.kind,
-          money: cmd.money,
-          ...(cmd.referenceExternalTransactionId === undefined
-            ? {}
-            : { referenceExternalTransactionId: cmd.referenceExternalTransactionId }),
-          createdAt: now,
-        });
-        tx.fail(FailureCode.ProcessingFailed, now);
-        await repos.transactions.insert(tx);
-        await repos.outbox.enqueue([
-          OutboxMessage.enqueue(
-            WagerTransactionRejected.from(tx, eventContextFactory(this.ids, now, ctx.correlationId, ctx.inbox?.messageId)()),
-          ),
-        ]);
-        await repos.audit.record({
-          ...this.auditEntry(cmd, ctx, now, 'FAILED'),
-          code: FailureCode.ProcessingFailed,
-          transactionId: tx.id,
-        });
-        this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
-        return resultOf(tx, false);
+        const existing = await this.findExistingOrConflict(repos, cmd);
+        if (existing !== undefined) return this.replay(repos, existing, cmd, ctx, now);
+        return this.markFailed(repos, this.newTransaction(cmd, now), ctx, now, insertTx, 'SUBMIT_WAGER');
       });
     } catch (recordError) {
       if (recordError instanceof IdempotencyConflictError) {
-        this.metrics.increment('idempotency_conflicts_total');
-        await this.audit.recordOutside({ ...this.auditEntry(cmd, ctx, now, 'IDEMPOTENCY_CONFLICT'), code: recordError.code });
+        await this.auditConflict(recordError, cmd, ctx, now);
         throw recordError;
       }
       this.logger.error({ ...this.logFields(cmd, ctx), err: recordError }, 'could not record FAILED transaction');
       throw error;
     }
+  }
+
+  private async markFailed(
+    repos: TxRepositories,
+    tx: WagerTransaction,
+    ctx: WagerContext,
+    now: Date,
+    persist: Persist,
+    operation: Operation,
+  ): Promise<WagerResult> {
+    tx.fail(FailureCode.ProcessingFailed, now);
+    await persist(repos, tx);
+    await repos.outbox.enqueue([
+      OutboxMessage.enqueue(
+        WagerTransactionRejected.from(tx, eventContextFactory(this.ids, now, ctx.correlationId, ctx.inbox?.messageId)()),
+      ),
+    ]);
+    await repos.audit.record({ ...this.auditFromTx(tx, ctx, now, 'FAILED', operation), code: FailureCode.ProcessingFailed });
+    this.metrics.increment('wager_transactions_total', { kind: tx.kind, status: tx.status });
+    return resultOf(tx, false);
+  }
+
+  /** The stored transaction for this key or external id, if any; a different payload under either is a conflict. */
+  private async findExistingOrConflict(repos: TxRepositories, cmd: WagerCommand): Promise<WagerTransaction | undefined> {
+    const existing =
+      (await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey)) ??
+      (await repos.transactions.findByExternalId(cmd.providerId, cmd.externalTransactionId));
+    if (existing !== undefined && (existing.idempotencyKey !== cmd.idempotencyKey || !existing.matchesPayload(cmd.payloadHash))) {
+      throw new IdempotencyConflictError(
+        `Idempotency key ${cmd.idempotencyKey} or external id ${cmd.externalTransactionId} was used with another payload`,
+      );
+    }
+    return existing;
+  }
+
+  private async replay(
+    repos: TxRepositories,
+    existing: WagerTransaction,
+    cmd: WagerCommand,
+    ctx: WagerContext,
+    now: Date,
+  ): Promise<WagerResult> {
+    await repos.audit.record({ ...this.auditEntry(cmd, ctx, now, 'REPLAY'), transactionId: existing.id });
+    this.metrics.increment('idempotent_replays_total');
+    this.logOutcome(existing, ctx, true);
+    return resultOf(existing, true);
+  }
+
+  private newTransaction(cmd: WagerCommand, now: Date): WagerTransaction {
+    return WagerTransaction.create({
+      id: this.ids.next(),
+      providerId: cmd.providerId,
+      externalTransactionId: cmd.externalTransactionId,
+      idempotencyKey: cmd.idempotencyKey,
+      payloadHash: cmd.payloadHash,
+      walletId: cmd.walletId,
+      playerId: cmd.playerId,
+      roundId: cmd.roundId,
+      gameId: cmd.gameId,
+      kind: cmd.kind,
+      money: cmd.money,
+      ...(cmd.referenceExternalTransactionId === undefined
+        ? {}
+        : { referenceExternalTransactionId: cmd.referenceExternalTransactionId }),
+      createdAt: now,
+    });
+  }
+
+  private async lockPending(
+    repos: TxRepositories,
+    transactionId: string,
+  ): Promise<{ kind: 'pending'; tx: WagerTransaction; wallet: Wallet } | { kind: 'settled'; result: WagerResult | undefined }> {
+    const peek = await repos.transactions.findById(transactionId);
+    if (peek?.status !== WagerTransactionStatus.PendingReference) {
+      return { kind: 'settled', result: peek === undefined ? undefined : resultOf(peek, true) };
+    }
+    const wallet = await this.lockWallet(repos, peek.walletId);
+    const tx = await repos.transactions.lockById(transactionId);
+    if (wallet === undefined || tx?.status !== WagerTransactionStatus.PendingReference) {
+      return { kind: 'settled', result: tx === undefined ? undefined : resultOf(tx, true) };
+    }
+    return { kind: 'pending', tx, wallet };
+  }
+
+  private async auditConflict(error: IdempotencyConflictError, cmd: WagerCommand, ctx: WagerContext, now: Date): Promise<void> {
+    this.metrics.increment('idempotency_conflicts_total');
+    await this.audit.recordOutside({ ...this.auditEntry(cmd, ctx, now, 'IDEMPOTENCY_CONFLICT'), code: error.code });
   }
 
   private async lockWallet(repos: TxRepositories, walletId: string): Promise<Wallet | undefined> {
@@ -445,11 +434,12 @@ export class ProcessWagerTransaction {
     await repos.inbox.markProcessed(message);
   }
 
+  /** For attempts that never became a transaction: duplicates, replays, conflicts, unknown wallets. */
   private auditEntry(cmd: WagerCommand, ctx: WagerContext, now: Date, outcome: AuditOutcome): AuditEntry {
     return {
       source: ctx.source,
       actor: ctx.actor,
-      operation: ctx.source === 'WORKER' ? 'RETRY_PENDING_REFERENCE' : 'SUBMIT_WAGER',
+      operation: 'SUBMIT_WAGER',
       outcome,
       correlationId: ctx.correlationId,
       occurredAt: now,
@@ -471,17 +461,36 @@ export class ProcessWagerTransaction {
     };
   }
 
-  private auditEntryFor(tx: WagerTransaction, ctx: WagerContext, now: Date, outcome: AuditOutcome): AuditEntry {
+  private auditFromTx(
+    tx: WagerTransaction,
+    ctx: WagerContext,
+    now: Date,
+    outcome: AuditOutcome,
+    operation: Operation,
+  ): AuditEntry {
     return {
       source: ctx.source,
       actor: ctx.actor,
-      operation: 'RETRY_PENDING_REFERENCE',
+      operation,
       outcome,
       correlationId: ctx.correlationId,
       occurredAt: now,
       idempotencyKey: tx.idempotencyKey,
       payloadHash: tx.payloadHash,
       walletId: tx.walletId,
+      transactionId: tx.id,
+      payload: {
+        providerId: tx.providerId,
+        externalTransactionId: tx.externalTransactionId,
+        playerId: tx.playerId,
+        walletId: tx.walletId,
+        roundId: tx.roundId,
+        gameId: tx.gameId,
+        kind: tx.kind,
+        money: { ...tx.money.toJSON() },
+        referenceExternalTransactionId: tx.referenceExternalTransactionId,
+      },
+      ...(ctx.inbox === undefined ? {} : { messageId: ctx.inbox.messageId }),
     };
   }
 

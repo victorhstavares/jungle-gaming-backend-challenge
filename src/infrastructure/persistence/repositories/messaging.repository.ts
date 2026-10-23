@@ -80,19 +80,20 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
            WHERE o.published_at IS NULL
              AND o.next_attempt_at <= ?
              AND (o.locked_until IS NULL OR o.locked_until < ?)
-             -- Only the oldest unpublished event of an aggregate is eligible, so events leave in commit order.
+             -- Only the oldest unpublished event of an aggregate is eligible. seq is assigned at insert, under the
+             -- wallet lock, so it follows commit order whatever the instances' clocks say.
              AND NOT EXISTS (
                SELECT 1 FROM outbox_messages earlier
                 WHERE earlier.aggregate_id = o.aggregate_id
                   AND earlier.published_at IS NULL
-                  AND (earlier.occurred_at, earlier.id) < (o.occurred_at, o.id))
-           ORDER BY o.occurred_at, o.id
+                  AND earlier.seq < o.seq)
+           ORDER BY o.seq
            LIMIT ?
            FOR UPDATE OF o SKIP LOCKED)
         RETURNING id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at, published_at`,
       [new Date(now.getTime() + leaseMs), now, now, limit],
     );
-    return rows.map(toOutbox).sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || (a.id < b.id ? -1 : 1));
+    return rows.map(toOutbox);
   }
 
   async markPublished(messages: readonly OutboxMessage[]): Promise<void> {

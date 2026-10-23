@@ -17,7 +17,6 @@ export type Decision =
   | { type: 'REJECT'; code: FailureCode }
   | { type: 'PENDING_REFERENCE' };
 
-/** Kinds that each kind may reference. */
 const ALLOWED_REFERENCES: Readonly<Record<Kind, ReadonlySet<Kind>>> = {
   [Kind.Opening]: new Set(),
   [Kind.Bet]: new Set(),

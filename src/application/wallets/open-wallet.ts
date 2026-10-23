@@ -98,7 +98,7 @@ export class OpenWallet {
         return toWalletView(wallet);
       });
     } catch (error) {
-      if (error instanceof UniqueViolationError && error.constraint === 'wallets_player_currency_key') {
+      if (error instanceof UniqueViolationError && error.target === 'wallet-identity') {
         await this.audit.recordOutside({ ...auditBase, outcome: 'CONTRACT_ERROR', code: 'WALLET_ALREADY_EXISTS' });
         throw new WalletAlreadyExistsError(`Player ${input.playerId} already has a ${initialBalance.currency} wallet`);
       }

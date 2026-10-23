@@ -1,10 +1,9 @@
 import { z } from 'zod';
+import { FAULT_POINTS, type FaultPoint } from '../application/ports/messaging';
 
 export const APP_ROLES = ['api', 'consumer', 'outbox', 'pending-reference'] as const;
 export type AppRole = (typeof APP_ROLES)[number];
 
-export const FAULT_POINTS = ['consumer.afterCommitBeforeAck', 'outbox.afterPublishBeforeMark'] as const;
-export type FaultPoint = (typeof FAULT_POINTS)[number];
 
 const csv = (value: string): string[] =>
   value

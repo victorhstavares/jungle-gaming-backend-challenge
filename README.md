@@ -91,7 +91,7 @@ Os eventos publicados pela outbox ficam em `wallet-events.fifo`, e as mensagens 
 | `bun run test` | testes de unidade, integração e concorrência (precisa de `docker compose up -d postgres localstack`) |
 | `bun run test:unit` | só os de unidade, sem infraestrutura |
 | `bun run test:integration` | integração contra Postgres e LocalStack reais |
-| `bun run test:concurrency` | cenários do README §13 com três processos reais, incluindo SIGKILL e Postgres pausado |
+| `bun run test:concurrency` | cenários do enunciado §13 com três processos reais, incluindo SIGKILL e Postgres pausado |
 | `bun run test:e2e` | ponta a ponta com o Keycloak real (precisa da stack completa) |
 | `bun run test:load -- --duration 60 --concurrency 50 --wallets 100` | teste de carga; grava `docs/load-test.md` |
 | `bun run demo:chaos -- --duration 60 --wallets 20` | carga com SIGKILL em instâncias aleatórias e reconciliação de todas as wallets no fim |

@@ -15,7 +15,7 @@ afterAll(async () => {
   await cluster.stop();
 });
 
-describe('README §13 recovery', () => {
+describe('challenge §13 recovery', () => {
   test('8. killing every instance mid-load and restarting ends consistent, with nothing lost', async () => {
     const wallets = await Promise.all(Array.from({ length: 5 }, () => openWallet(cluster, '100.00')));
     const accepted: string[] = [];

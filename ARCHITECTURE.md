@@ -110,7 +110,7 @@ Os eventos entram na outbox na mesma transação da mudança. O publicador:
 2. Envia em `SendMessageBatch` de 10, com `MessageGroupId` = agregado e `MessageDeduplicationId` = id do evento.
 3. Marca o lote com um único `UPDATE`.
 
-Só o evento pendente mais antigo de cada agregado pode ser pego, para que os eventos de uma wallet saiam na ordem dos commits. Os timestamps são lidos sob o lock da wallet; com relógios das instâncias sincronizados (NTP), seguem a ordem dos commits, e o `walletVersion` dos eventos de saldo permite ao consumidor ordenar mesmo se não estiverem. Uma falha reagenda o evento com backoff de até 5 min, sem descartá-lo. Se o publicador morrer depois de publicar e antes de marcar, o lease expira e outro publica de novo; o consumidor descarta a repetição pelo `eventId`. Ver ADR 0004.
+Só o evento pendente mais antigo de cada agregado pode ser pego, para que os eventos de uma wallet saiam na ordem dos commits. A ordem vem de uma sequência do banco (`seq`), atribuída no `INSERT` sob o lock da wallet, então não depende do relógio de nenhuma instância. Uma falha reagenda o evento com backoff de até 5 min, sem descartá-lo. Se o publicador morrer depois de publicar e antes de marcar, o lease expira e outro publica de novo; o consumidor descarta a repetição pelo `eventId`. Ver ADR 0004.
 
 | Evento | Quando |
 |---|---|
@@ -204,7 +204,7 @@ Toda tentativa que muda estado tem uma linha em `audit_log` com o resultado e o 
 
 Todos os testes de integração e concorrência usam Postgres e LocalStack reais, e todos terminam conferindo que o saldo da wallet é igual ao reconstruído pelo ledger e que as partidas fecham.
 
-| Cenário do README §13 | Onde |
+| Cenário do enunciado §13 | Onde |
 |---|---|
 | Mesma aposta 50 vezes em paralelo | `test/concurrency/concurrency.test.ts` (3 processos) |
 | Duas apostas de 80.00 com saldo 100.00 | idem |

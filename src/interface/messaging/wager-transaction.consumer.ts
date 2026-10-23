@@ -24,6 +24,7 @@ import { sha256Hex } from '../../domain/shared/canonical-json';
 import { runWithCorrelation } from '../../infrastructure/observability/correlation';
 
 export const WAGER_CONSUMER_NAME = 'wager-transactions-consumer';
+const POLL_ERROR_BACKOFF_MS = 1_000;
 
 export interface ConsumerOptions {
   queueUrl: string;
@@ -122,6 +123,7 @@ export class WagerTransactionConsumer {
     return messages.length;
   }
 
+  // Read through a method: `stop()` flips the flag while the loop awaits, which control-flow narrowing cannot see.
   private isStopping(): boolean {
     return this.stopping;
   }
@@ -133,7 +135,7 @@ export class WagerTransactionConsumer {
       } catch (error) {
         if (this.isStopping()) return;
         this.deps.logger.error({ err: error, queueUrl: this.options.queueUrl }, 'queue poll failed');
-        await Bun.sleep(1_000);
+        await Bun.sleep(POLL_ERROR_BACKOFF_MS);
       }
     }
   }
@@ -210,10 +212,7 @@ export class WagerTransactionConsumer {
   }
 
   private classify(error: unknown, command: WagerCommand, messageId: string): Verdict {
-    if (error instanceof IdempotencyConflictError) {
-      return { action: 'dlq', reason: error.code, code: error.code, command, messageId };
-    }
-    if (error instanceof InboxConflictError) {
+    if (error instanceof IdempotencyConflictError || error instanceof InboxConflictError) {
       return { action: 'dlq', reason: error.code, code: error.code, command, messageId };
     }
     // The wallet may be created moments after the first bet is queued; give it a few redeliveries.

@@ -70,12 +70,16 @@ export class TransientInfrastructureError extends ApplicationError {
   }
 }
 
-/** A UNIQUE constraint rejected the write; `constraint` names which one. */
+/** What a violated UNIQUE constraint protects, so use cases react without knowing constraint names. */
+export type UniqueTarget = 'idempotency' | 'wallet-identity' | 'other';
+
+/** A UNIQUE constraint rejected the write; `target` says what it protects, `constraint` names it for logs. */
 export class UniqueViolationError extends ApplicationError {
   readonly code = 'UNIQUE_VIOLATION';
 
   constructor(
     readonly constraint: string,
+    readonly target: UniqueTarget,
     options?: { cause?: unknown },
   ) {
     super(`Unique constraint violated: ${constraint}`);

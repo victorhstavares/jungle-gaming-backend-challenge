@@ -209,7 +209,7 @@ Gerado por \`bun run test:load -- --duration ${args.duration} --concurrency ${St
 | Replays respondidos sem erro | ${String(replayOk)} de ${String(replays.length)} |
 | Wallets consistentes na reconciliação | ${String(consistent)} de ${String(WALLETS)} |
 | Timeouts de lock da wallet (uma instância) | ${metric(/^wallet_lock_timeouts_total (\S+)$/m)} |
-| Espera de lock acumulada (uma instância) | ${metric(/^wallet_lock_wait_seconds_sum (\S+)$/m)} s em ${metric(/^wallet_lock_wait_seconds_count (\S+)$/m)} locks |
+| Espera de lock acumulada (uma instância) | ${fmt(Number(metric(/^wallet_lock_wait_seconds_sum (\S+)$/m)))} s em ${metric(/^wallet_lock_wait_seconds_count (\S+)$/m)} locks |
 | Outbox lag no fim (uma instância) | ${metric(/^outbox_lag_seconds (\S+)$/m)} s |
 
 ### Respostas por status

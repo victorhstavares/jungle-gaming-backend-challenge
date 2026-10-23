@@ -11,10 +11,6 @@ export function asString(value: unknown): string {
   throw new TypeError(`Expected a text column, got ${typeof value}`);
 }
 
-export function asOptionalString(value: unknown): string | undefined {
-  return value === null || value === undefined ? undefined : asString(value);
-}
-
 export function asNumber(value: unknown): number {
   if (typeof value === 'number') return value;
   if (typeof value === 'string' || typeof value === 'bigint') return Number(value);

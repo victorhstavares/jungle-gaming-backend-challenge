@@ -3,6 +3,7 @@ import {
   IntegrityViolationError,
   TransientInfrastructureError,
   UniqueViolationError,
+  type UniqueTarget,
 } from '../../application/errors';
 import type { TransactionContext, TransactionRunner, TxRepositories } from '../../application/ports/repositories';
 import { classifyDbError } from './pg-errors';
@@ -57,6 +58,12 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
   }
 }
 
+const UNIQUE_TARGETS: Readonly<Record<string, UniqueTarget>> = {
+  wager_tx_provider_idempotency_key: 'idempotency',
+  wager_tx_provider_external_key: 'idempotency',
+  wallets_player_currency_key: 'wallet-identity',
+};
+
 /** Driver errors become application errors here, so use cases never depend on Postgres error codes. */
 export function translateDbError(error: unknown): unknown {
   const failure = classifyDbError(error);
@@ -64,7 +71,7 @@ export function translateDbError(error: unknown): unknown {
     case 'transient':
       return new TransientInfrastructureError('Database temporarily unavailable', { cause: error, reason: failure.reason });
     case 'unique':
-      return new UniqueViolationError(failure.constraint, { cause: error });
+      return new UniqueViolationError(failure.constraint, UNIQUE_TARGETS[failure.constraint] ?? 'other', { cause: error });
     case 'integrity':
       return new IntegrityViolationError(failure.detail, { cause: error });
     case 'unknown':

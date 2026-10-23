@@ -16,7 +16,7 @@ afterAll(async () => {
 const balanceOf = async (walletId: string): Promise<string> =>
   String((await cluster.db.sql('SELECT balance_minor::text AS b FROM wallets WHERE id = $1', [walletId]))[0]?.b);
 
-describe('README §13 concurrency, against 3 real instances', () => {
+describe('challenge §13 concurrency, against 3 real instances', () => {
   test('1. the same bet sent 50 times in parallel debits once', async () => {
     const { walletId, playerId } = await openWallet(cluster, '1000.00');
     const body = wager(walletId, playerId, { money: { amount: '25.00', currency: 'BRL' } });
