@@ -169,6 +169,45 @@ describe('ledger_entries', () => {
   });
 });
 
+describe('outbox sequence migration', () => {
+  test('numbers an existing backlog in event order, not in disk order', async () => {
+    const scratch = await createTestDatabase();
+    const orm = await MikroORM.init(createOrmConfig({ databaseUrl: scratch.url, poolMax: 2 }));
+    try {
+      await orm.migrator.down({ to: 'Migration20261023000004_outbox_order' });
+      const aggregate = uuid();
+      for (let i = 0; i < 5; i += 1) {
+        await scratch.sql(
+          `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
+           VALUES ($1, $2, 'WalletBalanceChanged', '{}'::jsonb, now() + make_interval(secs => $3), 0, now())`,
+          [uuid(), aggregate, i],
+        );
+      }
+      // A retried event is rewritten in place, which moves it physically to the end of the heap.
+      await scratch.sql(
+        `UPDATE outbox_messages SET attempts = 1, locked_until = now()
+          WHERE occurred_at = (SELECT min(occurred_at) FROM outbox_messages)`,
+      );
+
+      await orm.migrator.up();
+
+      const rows = await scratch.sql(`SELECT seq FROM outbox_messages ORDER BY occurred_at`);
+      const seqs = rows.map((r) => Number(r.seq));
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+      await scratch.sql(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
+         VALUES ($1, $2, 'WalletBalanceChanged', '{}'::jsonb, now() + interval '1 hour', 0, now())`,
+        [uuid(), aggregate],
+      );
+      const [newest] = await scratch.sql(`SELECT seq FROM outbox_messages ORDER BY occurred_at DESC LIMIT 1`);
+      expect(Number(newest?.seq)).toBeGreaterThan(Math.max(...seqs));
+    } finally {
+      await orm.close(true);
+      await scratch.drop();
+    }
+  });
+});
+
 describe('migrations', () => {
   test('roll all the way down and back up', async () => {
     const scratch = await createTestDatabase();

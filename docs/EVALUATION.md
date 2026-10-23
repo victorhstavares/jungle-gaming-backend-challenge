@@ -35,7 +35,7 @@ O `demo:chaos` termina com uma tabela de wallets e a linha `All wallets consiste
 | Idempotência (15) | `wager-command.ts` (hash canônico), ADR 0003 | `process-wager-transaction.test.ts`, `concurrency.test.ts` |
 | Mensageria e falhas (15) | `src/interface/messaging/`, `src/application/outbox/`, `src/application/pending/`, ADRs 0004 e 0005 | `test/integration/messaging/*`, `lifecycle.test.ts`, `recovery.test.ts` |
 | Modelagem e arquitetura (10) | camadas em `src/`, `ARCHITECTURE.md` §1 a §3 | o domínio é testado sem banco: `test/unit/domain/*` |
-| Testes (10) | [TESTS.md](TESTS.md) | 258 testes, nenhum mock de infraestrutura |
+| Testes (10) | [TESTS.md](TESTS.md) | 259 testes, nenhum mock de infraestrutura |
 | Observabilidade (5) | `src/infrastructure/observability/`, `ARCHITECTURE.md` §14 | `http/metrics.test.ts`, `GET /metrics`, `/health/ready` |
 | Documentação (5) | `README.md`, `ARCHITECTURE.md`, `docs/adr/`, [OVERVIEW.md](OVERVIEW.md) | |
 

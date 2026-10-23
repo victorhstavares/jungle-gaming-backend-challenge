@@ -1,15 +1,15 @@
 # Testes
 
-258 testes no total, todos contra Postgres e LocalStack reais. Nenhum mock de banco ou de fila.
+259 testes no total, todos contra Postgres e LocalStack reais. Nenhum mock de banco ou de fila.
 
 | Grupo | Testes | Comando | Tempo |
 |---|---|---|---|
 | Unidade | 126 | `bun run test:unit` | < 1 s |
-| Integração | 124 | `bun run test:integration` | ~ 70 s |
+| Integração | 125 | `bun run test:integration` | ~ 70 s |
 | Concorrência (3 processos reais) | 7 | `bun run test:concurrency` | ~ 80 s |
 | Ponta a ponta (Keycloak + nginx) | 1 | `bun run test:e2e` | < 1 s |
 
-`bun run test` roda unidade, integração e concorrência (257 testes, cerca de 150 s). Precisa de `docker compose up -d postgres localstack`; o e2e precisa da stack completa.
+`bun run test` roda unidade, integração e concorrência (258 testes, cerca de 125 s). Precisa de `docker compose up -d postgres localstack`; o e2e precisa da stack completa.
 
 Todo teste que toca dinheiro termina conferindo a mesma invariante: saldo da wallet igual ao saldo reconstruído pelo ledger, e débitos iguais a créditos em cada transação.
 
@@ -36,7 +36,7 @@ Todo teste que toca dinheiro termina conferindo a mesma invariante: saldo da wal
 |---|---|---|
 | `http/api.test.ts` | 24 | todas as rotas, um status por situação, autorização entre providers, auditoria de erros de contrato |
 | `schema/triggers.test.ts` | 19 | ledger imutável, saldo e ledger andando juntos, histórico de status gravado pelo banco |
-| `schema/constraints.test.ts` | 15 | cada CHECK e UNIQUE recusa a linha errada; migrations sobem, descem e sobem de novo |
+| `schema/constraints.test.ts` | 16 | cada CHECK e UNIQUE recusa a linha errada; migrations sobem, descem e sobem de novo; o backlog da outbox mantém a ordem ao migrar |
 | `wallets/queries.test.ts` | 13 | paginação do ledger, cursor adulterado, reconciliação que acusa sem corrigir |
 | `wagering/process-wager-transaction.test.ts` | 11 | caso de uso completo: replay, conflito, referência fora de ordem, overflow vira `FAILED` |
 | `http/jwt-verifier.test.ts` | 9 | tokens expirados, de outro emissor, sem assinatura; chaves indisponíveis viram 503 |
