@@ -19,6 +19,6 @@ Autenticação não pontua, mas, se existir, deve vir de um Identity Provider ex
 
 ## Consequências
 
-- Uma queda curta do Keycloak não derruba a API, porque as chaves ficam em cache.
+- Uma queda curta do Keycloak não derruba a API, porque as chaves ficam em cache. Se as chaves não puderem ser buscadas, a resposta é 503, não 401: o token pode estar certo e o provider deve tentar de novo.
 - Os testes de integração usam um emissor RS256 local com JWKS real, sem atalho de autenticação. Um teste ponta a ponta usa o Keycloak de verdade.
 - Os segredos do realm são de desenvolvimento e estão versionados de propósito; em produção viriam de um cofre.

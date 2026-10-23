@@ -81,7 +81,7 @@ As garantias estão no banco: CHECKs de saldo não negativo e de aritmética dos
 
 - O header `Idempotency-Key` é obrigatório: de 1 a 256 caracteres ASCII imprimíveis, único por provider.
 - `payloadHash` = SHA-256 em hex de `canonicalJson(campos de negócio)`. O JSON canônico ordena as chaves recursivamente, não tem espaços e omite propriedades indefinidas. Os campos são `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money` e `referenceExternalTransactionId`. O header e os metadados de transporte não entram no hash.
-- Uma requisição idêntica recebe o mesmo status HTTP e o mesmo corpo da original, com `idempotentReplay: true`, incluindo o saldo visto na época.
+- Uma requisição idêntica recebe o resultado gravado, com `idempotentReplay: true`, incluindo o saldo visto na época. Se a original ficou pendente de referência e já assentou, o replay mostra o estado atual.
 - A mesma key com outro payload, ou o mesmo id externo com outra key, responde 409 `IDEMPOTENCY_CONFLICT` e fica auditado.
 
 Ver ADR 0003.
@@ -110,7 +110,7 @@ Os eventos entram na outbox na mesma transação da mudança. O publicador:
 2. Envia em `SendMessageBatch` de 10, com `MessageGroupId` = agregado e `MessageDeduplicationId` = id do evento.
 3. Marca o lote com um único `UPDATE`.
 
-Só o evento pendente mais antigo de cada agregado pode ser pego, para que os eventos de uma wallet saiam na ordem dos commits. Uma falha reagenda o evento com backoff de até 5 min, sem descartá-lo. Se o publicador morrer depois de publicar e antes de marcar, o lease expira e outro publica de novo; o consumidor descarta a repetição pelo `eventId`. Ver ADR 0004.
+Só o evento pendente mais antigo de cada agregado pode ser pego, para que os eventos de uma wallet saiam na ordem dos commits. Os timestamps são lidos sob o lock da wallet; com relógios das instâncias sincronizados (NTP), seguem a ordem dos commits, e o `walletVersion` dos eventos de saldo permite ao consumidor ordenar mesmo se não estiverem. Uma falha reagenda o evento com backoff de até 5 min, sem descartá-lo. Se o publicador morrer depois de publicar e antes de marcar, o lease expira e outro publica de novo; o consumidor descarta a repetição pelo `eventId`. Ver ADR 0004.
 
 | Evento | Quando |
 |---|---|
@@ -140,16 +140,16 @@ Cada tentativa fica auditada.
 | Situação | Status | Corpo |
 |---|---|---|
 | Transação nova processada, wallet criada | 201 | resultado |
-| Replay idêntico | mesmo status do original | resultado com `idempotentReplay: true` |
+| Replay idêntico | status do estado gravado | resultado com `idempotentReplay: true`; uma operação que estava pendente e já assentou responde o estado atual |
 | Aguardando referência | 202 | resultado com `status: PENDING_REFERENCE` |
 | Payload, valor, cursor ou id inválido, header ausente | 400 | problem+json |
 | Sem token ou token inválido | 401 | problem+json |
 | Papel insuficiente ou outro provider | 403 | problem+json |
 | Wallet, transação ou rota inexistente | 404 | problem+json |
 | Conflito de idempotência, wallet duplicada | 409 | problem+json |
-| Corpo acima de 64 KB | 413 | problem+json |
+| Corpo acima de 64 KB | 413 | problem+json (acima de 1 MB, o nginx responde antes da aplicação) |
 | Rejeição de negócio (`REJECTED` gravado) | 422 | resultado com `failureCode` |
-| Erro permanente gravado como `FAILED` | 500 | resultado com `failureCode: PROCESSING_FAILED` |
+| Erro permanente gravado como `FAILED` | 500 | resultado com `failureCode: PROCESSING_FAILED`; é resposta final, e o replay devolve o mesmo corpo |
 | Falha transitória de infraestrutura | 503 + `Retry-After: 1` | problem+json |
 
 Os erros seguem o RFC 9457 (`application/problem+json`), com `code` estável e `correlationId`. O cursor do ledger é o base64url da sequência do último lançamento: opaco para o cliente e estável sob novas inserções, porque os lançamentos de uma wallet são gravados sob o lock dela, em ordem.
@@ -184,7 +184,7 @@ Toda tentativa que muda estado tem uma linha em `audit_log` com o resultado e o 
 
 ## 14. Observabilidade
 
-- Logs: JSON (pino) com `correlationId` (propagado via `AsyncLocalStorage` e devolvido no header `X-Correlation-Id`), `messageId`, `transactionId`, `walletId`, `providerId`, `kind`, `status` e `failureCode`. Tokens, segredos, corpos e payloads são redigidos; valores financeiros não vão para o log.
+- Logs: JSON (pino) com `correlationId` (propagado via `AsyncLocalStorage` e devolvido no header `X-Correlation-Id`), `messageId`, `transactionId`, `walletId`, `providerId`, `kind`, `status` e `failureCode`. Tokens, segredos, corpos e payloads são redigidos, e os logs de rotina não carregam valores. A exceção é a mensagem de um erro de integridade do banco, que pode citar o saldo envolvido.
 - Métricas (Prometheus, `GET /metrics`):
 
 | Métrica | Mede |
@@ -223,7 +223,7 @@ Além disso: Postgres pausado (`docker compose pause`) devolve 503 e o reenvio a
 - LOSS pode ter valor `0.00`; as demais operações exigem valor maior que zero.
 - WIN pode referenciar a BET da rodada; sem referência, é aceito.
 - OPENING gera `WalletOpened` e `WalletBalanceChanged`, mas não `WagerTransactionProcessed`, porque é interno.
-- `FAILED` só existe para erro permanente de infraestrutura sobre uma operação com dados válidos. O replay devolve o mesmo `FAILED`.
+- `FAILED` só existe para erro permanente de infraestrutura sobre uma operação com dados válidos. Responde 500 porque não é rejeição de negócio, mas é final: o replay devolve o mesmo `FAILED`, e um provider que reenvia 5xx automaticamente deve parar ao ver `failureCode`.
 - `PENDING_REFERENCE` responde sem `balance`, porque a operação ainda não assentou.
 - Erros de contrato não viram transação; ficam em `audit_log`. Pela fila, vão para a DLQ.
 - `WALLET_NOT_FOUND` é 404 no HTTP. Na fila é retentado, porque a wallet pode ser criada logo depois.
@@ -233,7 +233,7 @@ Além disso: Postgres pausado (`docker compose pause`) devolve 503 e o reenvio a
 
 | Risco | Comportamento | Prova |
 |---|---|---|
-| Postgres cai ou congela no meio da carga | timeouts no cliente: 503 com `Retry-After`, nada gravado pela metade, a mensagem SQS volta para a fila; o reenvio com a mesma key aplica uma vez | `recovery.test.ts` |
+| Postgres cai ou congela no meio da carga | timeouts no cliente: 503 com `Retry-After`, nada gravado pela metade, a mensagem SQS volta para a fila; o reenvio com a mesma key aplica uma vez | HTTP: `recovery.test.ts` (Postgres pausado); fila: `fifo-order.test.ts` e `failure-paths.test.ts` (falha transitória injetada) |
 | Ids gigantes, corpo de MB, campos desconhecidos | ids limitados a `[A-Za-z0-9._:-]{1,128}`, corpo de no máximo 64 KB, schema estrito: 400 ou 413, nunca 500 | `api.test.ts` |
 | Cursor do ledger adulterado | decodificado e validado: 400 `INVALID_CURSOR` | `queries.test.ts`, `api.test.ts` |
 | Mesmo id externo com outra key | `UNIQUE (provider_id, external_transaction_id)`: 409 | `process-wager-transaction.test.ts` |

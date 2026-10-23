@@ -39,8 +39,9 @@ export class ReconcileWallet {
       const consistent = difference.isZero();
       const now = this.clock.now();
 
+      const runId = this.ids.next();
       await repos.reconciliations.record({
-        id: this.ids.next(),
+        id: runId,
         walletId,
         actor,
         correlationId,
@@ -63,13 +64,8 @@ export class ReconcileWallet {
       if (!consistent) {
         this.metrics.increment('reconciliation_mismatches_total');
         this.logger.error(
-          {
-            correlationId,
-            walletId,
-            storedMinor: stored.toMinor().toString(),
-            calculatedMinor: calculated.toMinor().toString(),
-            checkedEntries: entries,
-          },
+          // The amounts live in reconciliation_runs; the log only points at the run.
+          { correlationId, walletId, reconciliationRunId: runId, checkedEntries: entries },
           'wallet balance diverges from its ledger',
         );
       }

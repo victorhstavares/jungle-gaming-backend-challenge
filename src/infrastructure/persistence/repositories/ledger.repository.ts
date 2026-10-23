@@ -67,15 +67,4 @@ export class MikroOrmLedgerRepository implements LedgerRepository {
     );
     return { balanceMinor: asBigInt(row?.balance ?? 0), entries: asNumber(row?.entries ?? 0) };
   }
-
-  async unbalancedTransactions(walletId: string): Promise<string[]> {
-    const rows = await this.em.execute<SqlRow[]>(
-      `SELECT transaction_id FROM ledger_entries
-        WHERE transaction_id IN (SELECT transaction_id FROM ledger_entries WHERE wallet_id = ?)
-        GROUP BY transaction_id
-       HAVING sum(${SIGNED_AMOUNT}) <> 0`,
-      [walletId],
-    );
-    return rows.map((row) => asString(row.transaction_id));
-  }
 }

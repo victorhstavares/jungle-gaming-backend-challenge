@@ -186,6 +186,30 @@ describe('wagering', () => {
     expect(res.body.code).toBe(code);
   });
 
+  test('contract errors and provider impersonation are audited', async () => {
+    const { walletId, playerId } = await createWallet();
+    const bad = await call('POST', '/wagering/transactions', {
+      token: providerA,
+      body: wager(walletId, playerId, { money: { amount: '25.5', currency: 'BRL' } }),
+      headers: { 'idempotency-key': `bad-${Bun.randomUUIDv7()}`, 'x-correlation-id': 'corr-audit-contract' },
+    });
+    const forged = await call('POST', '/wagering/transactions', {
+      token: providerA,
+      body: wager(walletId, playerId, { providerId: 'provider-b' }),
+      headers: { 'idempotency-key': `forged-${Bun.randomUUIDv7()}`, 'x-correlation-id': 'corr-audit-forged' },
+    });
+    expect([bad.status, forged.status]).toEqual([400, 403]);
+
+    const rows = await db.sql(
+      `SELECT correlation_id, outcome, code, actor FROM audit_log
+        WHERE correlation_id IN ('corr-audit-contract', 'corr-audit-forged') ORDER BY correlation_id`,
+    );
+    expect(rows).toEqual([
+      { correlation_id: 'corr-audit-contract', outcome: 'CONTRACT_ERROR', code: 'INVALID_MONEY', actor: 'provider-a' },
+      { correlation_id: 'corr-audit-forged', outcome: 'CONTRACT_ERROR', code: 'PROVIDER_MISMATCH', actor: 'provider-a' },
+    ]);
+  });
+
   test('a body above 64 KB is a 413 problem, and malformed JSON is a 400', async () => {
     const big = await call('POST', '/wagering/transactions', {
       token: providerA,

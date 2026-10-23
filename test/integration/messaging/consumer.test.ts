@@ -133,6 +133,17 @@ describe('WagerTransactionConsumer', () => {
     expect(Number(audited[0]?.n)).toBeGreaterThanOrEqual(2);
   });
 
+  test('a messageId longer than 64 characters is dead-lettered at once as INVALID_PAYLOAD', async () => {
+    const { walletId, playerId } = await wallet('100.00');
+    await queues.send(wagerMessage(data(walletId, playerId), `m${'x'.repeat(64)}`), walletId);
+
+    await consumer.pollOnce();
+
+    const parked = await queues.drain(queues.dlqUrl);
+    expect(parked.map((m) => m.MessageAttributes?.reason?.StringValue)).toEqual(['INVALID_PAYLOAD']);
+    expect(await debits(walletId)).toBe(0);
+  });
+
   test('a message reusing an id with other content is dead-lettered', async () => {
     const { walletId, playerId } = await wallet('100.00');
     const messageId = `msg-reused-${Bun.randomUUIDv7()}`;

@@ -48,7 +48,8 @@ export interface ConsumerDeps {
 }
 
 const envelopeSchema = z.object({
-  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
+  // The message id becomes the correlation id, which audit and history columns cap at 64 characters.
+  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
   type: z.literal('WagerTransactionRequested'),
   occurredAt: z.iso.datetime(),
   data: z.record(z.string(), z.unknown()),

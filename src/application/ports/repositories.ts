@@ -37,8 +37,6 @@ export interface LedgerRepository {
   insert(entry: WalletLedgerEntry, counterpart: CounterpartEntry): Promise<void>;
   page(walletId: string, afterSeq: bigint | undefined, limit: number): Promise<LedgerPageItem[]>;
   sumForWallet(walletId: string): Promise<{ balanceMinor: bigint; entries: number }>;
-  /** Transactions of the wallet whose postings do not net to zero; empty when the double entry holds. */
-  unbalancedTransactions(walletId: string): Promise<string[]>;
 }
 
 export interface InboxRepository {

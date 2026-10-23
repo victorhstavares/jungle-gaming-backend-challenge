@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { TransientInfrastructureError } from '../../../src/application/errors';
 import { InvalidCredentialsError } from '../../../src/application/ports/identity';
 import { JwtVerifier } from '../../../src/infrastructure/auth/jwt-verifier';
 import { rejectionOf } from '../../support/db';
@@ -43,5 +44,10 @@ describe('JwtVerifier', () => {
     ['unsigned', () => Promise.resolve(`${btoa('{"alg":"none"}')}.${btoa('{"azp":"p"}')}.`)],
   ])('rejects a %s token', async (_label, make) => {
     expect(await rejectionOf(verifier.verify(await make()))).toBeInstanceOf(InvalidCredentialsError);
+  });
+
+  test('an unreachable JWKS endpoint is a transient failure, not bad credentials', async () => {
+    const offline = new JwtVerifier({ jwksUrl: 'http://localhost:1/certs', issuer: issuer.issuer, audience: issuer.audience });
+    expect(await rejectionOf(offline.verify(await issuer.provider('provider-a')))).toBeInstanceOf(TransientInfrastructureError);
   });
 });

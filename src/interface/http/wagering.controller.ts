@@ -1,13 +1,15 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { TransactionNotFoundError } from '../../application/errors';
+import type { AuditRecorder } from '../../application/audit/audit-recorder';
+import { ContractError, TransactionNotFoundError } from '../../application/errors';
+import type { Clock } from '../../application/ports/clock';
 import type { ProcessWagerTransaction } from '../../application/wagering/process-wager-transaction';
 import { parseWagerCommand } from '../../application/wagering/wager-command';
 import type { TransactionView, WagerQueries } from '../../application/wagering/wager-queries';
 import type { AppConfig } from '../../config/config';
 import { TOKENS } from '../../composition/tokens';
 import { Roles } from './auth.guard';
-import { assertActsFor, canSee, principalOf } from './request-context';
+import { ForbiddenError, assertActsFor, canSee, principalOf } from './request-context';
 import { identifierParam, singleHeader, uuidParam } from './schemas';
 import { statusForWager } from './status-mapping';
 
@@ -25,6 +27,8 @@ export class WageringController {
     @Inject(TOKENS.processWager) private readonly processWager: ProcessWagerTransaction,
     @Inject(TOKENS.wagerQueries) private readonly queries: WagerQueries,
     @Inject(TOKENS.config) private readonly config: AppConfig,
+    @Inject(TOKENS.audit) private readonly audit: AuditRecorder,
+    @Inject(TOKENS.clock) private readonly clock: Clock,
   ) {}
 
   @Post('wagering/transactions')
@@ -36,12 +40,30 @@ export class WageringController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<SubmitResponse> {
     const principal = principalOf(request);
-    const command = parseWagerCommand(
-      body,
-      singleHeader(idempotencyKey, 'Idempotency-Key'),
-      this.config.supportedCurrencies,
-    );
-    assertActsFor(principal, command.providerId);
+    let command: ReturnType<typeof parseWagerCommand>;
+    try {
+      command = parseWagerCommand(
+        body,
+        singleHeader(idempotencyKey, 'Idempotency-Key'),
+        this.config.supportedCurrencies,
+      );
+      assertActsFor(principal, command.providerId);
+    } catch (error) {
+      // Refused before any transaction exists; the audit row is the only record that the attempt happened.
+      if (error instanceof ContractError || error instanceof ForbiddenError) {
+        await this.audit.recordOutside({
+          source: 'HTTP',
+          actor: principal.clientId,
+          operation: 'SUBMIT_WAGER',
+          outcome: 'CONTRACT_ERROR',
+          code: error.code,
+          correlationId: request.correlationId,
+          occurredAt: this.clock.now(),
+          ...(typeof idempotencyKey === 'string' && idempotencyKey.length <= 256 ? { idempotencyKey } : {}),
+        });
+      }
+      throw error;
+    }
 
     const result = await this.processWager.execute(command, {
       source: 'HTTP',

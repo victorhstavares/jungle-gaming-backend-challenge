@@ -1,4 +1,5 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from 'jose';
+import { TransientInfrastructureError } from '../../application/errors';
 import {
   InvalidCredentialsError,
   type IdentityVerifier,
@@ -44,6 +45,10 @@ export class JwtVerifier implements IdentityVerifier {
         clockTolerance: 5,
       }));
     } catch (error) {
+      // Not reaching the key set says nothing about the token; answer 503 so the caller retries.
+      if (error instanceof errors.JWKSTimeout || !(error instanceof errors.JOSEError)) {
+        throw new TransientInfrastructureError('Identity provider keys unavailable', { cause: error, reason: 'connection' });
+      }
       throw new InvalidCredentialsError('Invalid access token', { cause: error });
     }
 
