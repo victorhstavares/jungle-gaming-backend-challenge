@@ -98,3 +98,13 @@ export async function constraintOf(promise: Promise<unknown>): Promise<string | 
     return (error as { constraint?: string }).constraint;
   }
 }
+
+/** Resolves to whatever the promise rejected with; fails the test if it resolved. */
+export async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the promise to reject');
+}
