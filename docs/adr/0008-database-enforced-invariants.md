@@ -18,7 +18,7 @@ Cada invariante tem uma barreira no banco:
 | Reversão única | índice único parcial `wager_tx_single_reversal_idx` |
 | Lançamento bate | `CHECK` de `balance_after = balance_before ± amount` |
 | Ledger imutável | triggers bloqueiam `UPDATE`, `DELETE` e `TRUNCATE` |
-| Saldo e ledger em lockstep | constraint trigger adiada: todo saldo de wallet tem lançamento `WALLET` na mesma versão com o mesmo `balance_after`; cada lançamento continua o saldo do anterior |
+| Saldo acompanha o ledger | constraint trigger adiada: toda mudança de saldo exige o lançamento `WALLET` da mesma versão, com o mesmo `balance_after`; cada lançamento continua o saldo do anterior. Um lançamento avulso sem mudança de saldo não é barrado aqui e aparece na reconciliação |
 | Partida dobrada fecha | constraint trigger adiada: débitos = créditos por transação |
 | Versão acompanha o saldo | trigger: saldo muda ⇔ versão sobe exatamente 1 |
 | Status terminal não muda | trigger bloqueia alteração de transação `PROCESSED`, `REJECTED` ou `FAILED` e de campos de negócio |

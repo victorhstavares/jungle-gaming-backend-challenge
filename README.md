@@ -4,7 +4,9 @@ Serviço financeiro que processa transações de aposta (BET, WIN, LOSS, REFUND,
 
 Stack: Bun 1.4 · TypeScript estrito · NestJS 12 (Fastify) · MikroORM 7 · PostgreSQL 17 · SQS via LocalStack 4.9 · Keycloak 26 · Docker Compose.
 
-As decisões, os trade-offs e as limitações estão em [ARCHITECTURE.md](ARCHITECTURE.md). Cada decisão não óbvia tem um ADR em [docs/adr](docs/adr), e o teste de carga está em [docs/load-test.md](docs/load-test.md).
+Para começar: [o que o sistema faz](docs/OVERVIEW.md), em uma página, e o [guia do avaliador](docs/EVALUATION.md), que aponta onde está cada item da avaliação e como ver tudo funcionando.
+
+As decisões, os trade-offs e as limitações estão em [ARCHITECTURE.md](ARCHITECTURE.md). Cada decisão não óbvia tem um ADR em [docs/adr](docs/adr). O resumo dos testes está em [docs/TESTS.md](docs/TESTS.md) e o teste de carga em [docs/load-test.md](docs/load-test.md).
 
 ## Pré-requisitos
 
