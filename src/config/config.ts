@@ -36,7 +36,7 @@ const envSchema = z
     JWKS_URL: z.url(),
     AUTH_ISSUER: z.string().min(1),
     AUTH_AUDIENCE: z.string().min(1),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    LOG_LEVEL: z.enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     FAULT_INJECTION: z.enum(FAULT_POINTS).optional(),
   })
   .refine((env) => env.FAULT_INJECTION === undefined || env.NODE_ENV === 'test', {

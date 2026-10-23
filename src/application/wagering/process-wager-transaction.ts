@@ -307,8 +307,19 @@ export class ProcessWagerTransaction {
       );
       throw error;
     }
-    if (error instanceof IntegrityViolationError || error instanceof UniqueViolationError || !(error instanceof ApplicationError)) {
+    // Only a proven integrity violation is permanent. Anything unclassified is surfaced so the caller retries with
+    // the same key; turning it into a terminal FAILED could lose a bet that would succeed on the next attempt.
+    if (error instanceof IntegrityViolationError) {
       return this.recordFailed(error, cmd, ctx, now);
+    }
+    if (error instanceof UniqueViolationError && IDEMPOTENCY_CONSTRAINTS.has(error.constraint)) {
+      throw new TransientInfrastructureError('Concurrent request with the same key; retry', { cause: error, reason: 'conflict' });
+    }
+    if (error instanceof UniqueViolationError) {
+      return this.recordFailed(error, cmd, ctx, now);
+    }
+    if (!(error instanceof ApplicationError)) {
+      this.logger.error({ ...this.logFields(cmd, ctx), err: error }, 'wager processing failed with an unexpected error');
     }
     throw error;
   }
@@ -322,8 +333,18 @@ export class ProcessWagerTransaction {
     this.logger.error({ ...this.logFields(cmd, ctx), err: error }, 'wager processing failed permanently');
     try {
       return await this.runner.run({ correlationId: ctx.correlationId }, async (repos) => {
-        const existing = await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey);
-        if (existing !== undefined) return resultOf(existing, true);
+        const existing =
+          (await repos.transactions.findByIdempotencyKey(cmd.providerId, cmd.idempotencyKey)) ??
+          (await repos.transactions.findByExternalId(cmd.providerId, cmd.externalTransactionId));
+        if (existing !== undefined) {
+          if (existing.idempotencyKey !== cmd.idempotencyKey || !existing.matchesPayload(cmd.payloadHash)) {
+            throw new IdempotencyConflictError(
+              `Idempotency key ${cmd.idempotencyKey} or external id ${cmd.externalTransactionId} was used with another payload`,
+            );
+          }
+          await repos.audit.record({ ...this.auditEntry(cmd, ctx, now, 'REPLAY'), transactionId: existing.id });
+          return resultOf(existing, true);
+        }
 
         const tx = WagerTransaction.create({
           id: this.ids.next(),
@@ -358,6 +379,11 @@ export class ProcessWagerTransaction {
         return resultOf(tx, false);
       });
     } catch (recordError) {
+      if (recordError instanceof IdempotencyConflictError) {
+        this.metrics.increment('idempotency_conflicts_total');
+        await this.audit.recordOutside({ ...this.auditEntry(cmd, ctx, now, 'IDEMPOTENCY_CONFLICT'), code: recordError.code });
+        throw recordError;
+      }
       this.logger.error({ ...this.logFields(cmd, ctx), err: recordError }, 'could not record FAILED transaction');
       throw error;
     }

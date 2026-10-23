@@ -29,7 +29,6 @@
     "@nestjs/platform-fastify": "12.2.0",
     "@prometheus-io/client": "0.16.1",
     "jose": "6.2.13",
-    "nestjs-pino": "5.3.1",
     "pino": "10.4.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",

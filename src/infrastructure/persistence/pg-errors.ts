@@ -11,6 +11,8 @@ const CONFLICT_STATES = new Set(['40001', '40P01']);
 const CONNECTION_STATES = new Set(['57P01', '57P02', '57P03', '53300']);
 const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND']);
 const INTEGRITY_STATES = new Set(['23514', '23503', '23502', '22003', 'P0001']);
+// node-postgres and pg-pool raise these without a SQLSTATE when the socket drops or the pool cannot connect.
+const CODELESS_CONNECTION_ERRORS = /Connection terminated|timeout exceeded when trying to connect|Client has encountered a connection error|Connection ended unexpectedly/i;
 
 interface ErrorFacts {
   code?: string;
@@ -52,6 +54,9 @@ export function classifyDbError(error: unknown): DbErrorClass {
     if (INTEGRITY_STATES.has(code)) {
       return { kind: 'integrity', detail: fact.message };
     }
+  }
+  if (facts.some((fact) => fact.code === undefined && CODELESS_CONNECTION_ERRORS.test(fact.message))) {
+    return { kind: 'transient', reason: 'connection' };
   }
   return { kind: 'unknown' };
 }
