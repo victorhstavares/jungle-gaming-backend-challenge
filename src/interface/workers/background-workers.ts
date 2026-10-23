@@ -70,7 +70,7 @@ export class BackgroundWorkers implements OnApplicationBootstrap, BeforeApplicat
         this.logger,
         this.metrics,
         this.faults,
-        { batchSize: 50, leaseMs: 30_000 },
+        { batchSize: 200, leaseMs: 30_000 },
       );
       this.pollers.push(new Poller('outbox', async () => (await outbox.execute()).published, IDLE_MS, this.logger));
     }

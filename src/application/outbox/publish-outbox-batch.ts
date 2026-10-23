@@ -32,60 +32,46 @@ export class PublishOutboxBatch {
       repos.outbox.claim(this.clock.now(), this.options.batchSize, this.options.leaseMs),
     );
 
-    const byAggregate = new Map<string, OutboxMessage[]>();
-    for (const message of claimed) {
-      byAggregate.set(message.aggregateId, [...(byAggregate.get(message.aggregateId) ?? []), message]);
-    }
-    const outcomes = await Promise.all(
-      [...byAggregate.values()].map(async (messages) => {
-        let published = 0;
-        let failed = 0;
-        for (const message of messages) {
-          if (await this.publishOne(message)) published += 1;
-          else failed += 1;
-        }
-        return { published, failed };
-      }),
-    );
+    // The claim hands out at most one event per aggregate, so the whole batch can go out at once.
+    const failures = await this.publisher.publishBatch(claimed);
+    const published = claimed.filter((message) => !failures.has(message.id));
+    const failed = claimed.filter((message) => failures.has(message.id));
+    await Promise.all(failed.map((message) => this.recordFailure(message, failures.get(message.id) ?? 'unknown')));
 
+    if (published.length > 0) {
+      this.faults.at('outbox.afterPublishBeforeMark');
+      await this.markPublished(published);
+    }
     await this.updateLag();
-    return outcomes.reduce((total, o) => ({ published: total.published + o.published, failed: total.failed + o.failed }), {
-      published: 0,
-      failed: 0,
-    });
+    return { published: published.length, failed: failed.length };
   }
 
-  private async publishOne(message: OutboxMessage): Promise<boolean> {
+  /** One UPDATE for the whole batch keeps the publisher from competing with wagers for pooled connections. */
+  private async markPublished(messages: readonly OutboxMessage[]): Promise<void> {
+    const now = this.clock.now();
+    for (const message of messages) message.markPublished(now);
     try {
-      await this.publisher.publish(message);
+      await this.runner.run(CTX, (repos) => repos.outbox.markPublished(messages));
+      this.metrics.increment('outbox_published_total', {}, messages.length);
     } catch (error) {
-      message.scheduleRetry(this.clock.now());
-      this.metrics.increment('outbox_publish_failures_total');
-      this.logger.warn(
-        { err: error, eventId: message.id, eventType: message.eventType, attempts: message.attempts },
-        'outbox publish failed, will retry',
-      );
-      try {
-        await this.runner.run(CTX, (repos) =>
-          repos.outbox.recordFailure(message, error instanceof Error ? error.message : String(error)),
-        );
-      } catch (recordError) {
-        // The lease expires on its own, so the message is retried even if this bookkeeping is lost.
-        this.logger.error({ err: recordError, eventId: message.id }, 'could not record outbox failure');
-      }
-      return false;
+      // Already on the broker; they will be published again after the lease and deduplicated downstream.
+      this.logger.error({ err: error, events: messages.length }, 'published events could not be marked');
     }
+  }
 
-    this.faults.at('outbox.afterPublishBeforeMark');
-    message.markPublished(this.clock.now());
+  private async recordFailure(message: OutboxMessage, reason: string): Promise<void> {
+    message.scheduleRetry(this.clock.now());
+    this.metrics.increment('outbox_publish_failures_total');
+    this.logger.warn(
+      { eventId: message.id, eventType: message.eventType, attempts: message.attempts, reason },
+      'outbox publish failed, will retry',
+    );
     try {
-      await this.runner.run(CTX, (repos) => repos.outbox.markPublished(message));
+      await this.runner.run(CTX, (repos) => repos.outbox.recordFailure(message, reason));
     } catch (error) {
-      // Already on the broker; it will be published again after the lease and deduplicated downstream.
-      this.logger.error({ err: error, eventId: message.id }, 'published event could not be marked');
+      // The lease expires on its own, so the message is retried even if this bookkeeping is lost.
+      this.logger.error({ err: error, eventId: message.id }, 'could not record outbox failure');
     }
-    this.metrics.increment('outbox_published_total');
-    return true;
   }
 
   private async updateLag(): Promise<void> {

@@ -51,7 +51,7 @@ export interface InboxRepository {
 export interface OutboxRepository {
   enqueue(messages: readonly OutboxMessage[]): Promise<void>;
   claim(now: Date, limit: number, leaseMs: number): Promise<OutboxMessage[]>;
-  markPublished(message: OutboxMessage): Promise<void>;
+  markPublished(messages: readonly OutboxMessage[]): Promise<void>;
   recordFailure(message: OutboxMessage, error: string): Promise<void>;
   oldestPendingOccurredAt(): Promise<Date | undefined>;
 }

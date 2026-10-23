@@ -95,10 +95,11 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
     return rows.map(toOutbox).sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || (a.id < b.id ? -1 : 1));
   }
 
-  async markPublished(message: OutboxMessage): Promise<void> {
-    await this.em.execute(`UPDATE outbox_messages SET published_at = ?, locked_until = NULL WHERE id = ?`, [
-      message.publishedAt ?? new Date(),
-      message.id,
+  async markPublished(messages: readonly OutboxMessage[]): Promise<void> {
+    if (messages.length === 0) return;
+    await this.em.execute(`UPDATE outbox_messages SET published_at = ?, locked_until = NULL WHERE id = ANY(?::uuid[])`, [
+      messages[0]?.publishedAt ?? new Date(),
+      `{${messages.map((m) => m.id).join(',')}}`,
     ]);
   }
 
